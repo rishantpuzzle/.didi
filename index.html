@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -87,7 +86,15 @@ html,body,#app{
   <div id="bubble"></div>
  </div>
 
- <div id="loader">Loading your 3D player...</div>
+ <div id="loader">
+   <div class="loader-card">
+    <div class="loader-spinner"></div>
+    <strong id="loadTitle">Loading Talking Player 3D...</strong>
+    <div class="progress-track"><div id="progressFill"></div></div>
+    <span id="progressText">Building 3D road and loading your character · 8%</span>
+   </div>
+  </div>
+  <audio id="voiceAudio" src="./audio.mp3" preload="auto"></audio>
 
  <div id="buttons">
   <button id="jump">⬆ Bounce</button>
@@ -109,6 +116,10 @@ import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 const $=s=>document.querySelector(s);
 const canvas=$('#scene');
 const loaderEl=$('#loader');
+const loadTitle=$('#loadTitle');
+const progressFill=$('#progressFill');
+const progressText=$('#progressText');
+const voiceAudio=$('#voiceAudio');
 const hint=$('#hint');
 const bubble=$('#bubble');
 const mic=$('#mic');
@@ -125,6 +136,8 @@ let shakeClip=null;
 let activeAction=null;
 
 const scene=new THREE.Scene();
+scene.background=new THREE.Color(0xb8e5ff);
+scene.fog=new THREE.Fog(0xb8e5ff,38,125);
 const camera=new THREE.PerspectiveCamera(
  35,innerWidth/innerHeight,.1,1000
 );
@@ -156,6 +169,51 @@ scene.add(fillLight);
 const rimLight=new THREE.DirectionalLight(0xffffff,1);
 rimLight.position.set(0,4,-5);
 scene.add(rimLight);
+
+// =====================================
+// 3D ROAD ENVIRONMENT
+// =====================================
+function addRoadEnvironment(){
+  const groundMat=new THREE.MeshStandardMaterial({color:0x75b96a,roughness:1});
+  const roadMat=new THREE.MeshStandardMaterial({color:0x303642,roughness:.96});
+  const curbMat=new THREE.MeshStandardMaterial({color:0xd8dce2,roughness:1});
+  const lineMat=new THREE.MeshStandardMaterial({color:0xfff4c2,roughness:.8});
+  const grass=new THREE.Mesh(new THREE.PlaneGeometry(240,260),groundMat);
+  grass.rotation.x=-Math.PI/2; grass.position.set(0,-.16,-35); grass.receiveShadow=true; scene.add(grass);
+  const road=new THREE.Mesh(new THREE.PlaneGeometry(7.6,260),roadMat);
+  road.rotation.x=-Math.PI/2; road.position.set(0,-.075,-35); road.receiveShadow=true; scene.add(road);
+  for(const side of [-1,1]){
+    const sidewalk=new THREE.Mesh(new THREE.PlaneGeometry(1.35,260),curbMat);
+    sidewalk.rotation.x=-Math.PI/2; sidewalk.position.set(side*4.48,-.055,-35); sidewalk.receiveShadow=true; scene.add(sidewalk);
+    const edge=new THREE.Mesh(new THREE.BoxGeometry(.10,.025,260),lineMat);
+    edge.position.set(side*3.72,-.035,-35); scene.add(edge);
+  }
+  for(let z=-160;z<100;z+=5.5){
+    const dash=new THREE.Mesh(new THREE.BoxGeometry(.13,.025,2.5),lineMat);
+    dash.position.set(0,-.035,z); scene.add(dash);
+  }
+  const trunkMat=new THREE.MeshStandardMaterial({color:0x79533a,roughness:1});
+  const leafMats=[0x238451,0x31965a,0x55a95f].map(color=>new THREE.MeshStandardMaterial({color,roughness:1}));
+  const poleMat=new THREE.MeshStandardMaterial({color:0x4b5563,metalness:.35,roughness:.65});
+  const lampMat=new THREE.MeshStandardMaterial({color:0xfff1bc,emissive:0xffc45c,emissiveIntensity:.65});
+  for(let z=-105,i=0;z<65;z+=15,i++){
+    for(const side of [-1,1]){
+      const x=side*(8.2+(i%3)*.65);
+      const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.12,.17,1.55,8),trunkMat);
+      trunk.position.set(x,.76,z-(i%2)*2); trunk.castShadow=true; scene.add(trunk);
+      const crown=new THREE.Mesh(new THREE.SphereGeometry(.78,10,8),leafMats[i%leafMats.length]);
+      crown.position.set(x,1.9,z-(i%2)*2); crown.scale.set(1,1.18,1); crown.castShadow=true; scene.add(crown);
+      const lx=side*5.55;
+      const pole=new THREE.Mesh(new THREE.CylinderGeometry(.045,.07,3.6,8),poleMat);
+      pole.position.set(lx,1.8,z+4); scene.add(pole);
+      const arm=new THREE.Mesh(new THREE.BoxGeometry(.62,.07,.07),poleMat);
+      arm.position.set(lx-side*.25,3.48,z+4); scene.add(arm);
+      const lamp=new THREE.Mesh(new THREE.SphereGeometry(.16,8,8),lampMat);
+      lamp.position.set(lx-side*.52,3.42,z+4); scene.add(lamp);
+    }
+  }
+}
+addRoadEnvironment();
 
 const shadow=new THREE.Mesh(
  new THREE.CircleGeometry(1.6,40),
@@ -247,7 +305,9 @@ function loadPlayer(){
    const maxSize=Math.max(size.x,size.y,size.z);
 
    if(!Number.isFinite(maxSize)||maxSize<=0){
-    loaderEl.textContent='Invalid player.glb model';
+    loadTitle.textContent='Invalid player.glb model';
+     progressText.textContent='Please check the GLB file and try again.';
+     progressFill.style.width='100%';
     return;
    }
 
@@ -342,22 +402,43 @@ function say(text,ms=1600){
  },ms);
 }
 
+let mediaAudioSource=null;
+let voiceAudioBound=false;
+
 function speakReaction(text){
- if(!('speechSynthesis' in window))return;
+  // Reaction text is shown in the bubble; audio.mp3 plays your recorded voice.
+  playCustomVoice();
+}
 
- speechSynthesis.cancel();
- const utterance=new SpeechSynthesisUtterance(text);
- utterance.pitch=1.6;
- utterance.rate=1.12;
- utterance.volume=.9;
-
- const voices=speechSynthesis.getVoices();
- const voice=voices.find(v=>
-  /female|zira|samantha|google.*(uk|us)/i.test(v.name)
- );
- if(voice)utterance.voice=voice;
-
- speechSynthesis.speak(utterance);
+async function playCustomVoice(){
+  if(recording)return;
+  try{
+    initAudio();
+    if(!mediaAudioSource){
+      mediaAudioSource=audioContext.createMediaElementSource(voiceAudio);
+      mediaAudioSource.connect(analyser);
+    }
+    voiceAudio.pause();
+    voiceAudio.currentTime=0;
+    playing=true;
+    hint.textContent='🔊 Your voice is playing...';
+    if(talkClip)playClip(talkClip,true);
+    await voiceAudio.play();
+    if(!voiceAudioBound){
+      voiceAudio.addEventListener('ended',()=>{
+        playing=false;
+        idleAnimation();
+        hint.textContent='🎤 Mic dabao aur kuch bolo!';
+      });
+      voiceAudioBound=true;
+    }
+  }catch(error){
+    console.error('audio.mp3 playback error:',error);
+    playing=false;
+    idleAnimation();
+    say('audio.mp3 ko index.html ke saath rakho 🎵',2400);
+    hint.textContent='Audio play karne ke liye dobara tap karo';
+  }
 }
 
 // =====================================
@@ -676,10 +757,11 @@ if('speechSynthesis' in window){
  speechSynthesis.onvoiceschanged=()=>speechSynthesis.getVoices();
 }
 
+voiceAudio.addEventListener('error',()=>{
+  console.warn('audio.mp3 not found. Put audio.mp3 in the same folder as index.html.');
+});
 loadPlayer();
 requestAnimationFrame(animate);
 </script>
-</body>
-</html>
 </body>
 </html>
